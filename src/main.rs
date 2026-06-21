@@ -1,7 +1,13 @@
 use eframe::egui;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
-use std::{sync::{Arc, Mutex, atomic::{AtomicBool, Ordering}}, time};
+use std::{
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::{self},
+};
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Header {
@@ -17,51 +23,87 @@ struct SavedRequest {
     body: String,
 }
 
-struct PostmanApp {
-    method_index: usize,
-    methods: Vec<&'static str>,
+#[derive(Clone)]
+struct RequestTab {
+    id: u64,
+    name: String,
 
+    method_index: usize,
     url: String,
+
     headers: Vec<Header>,
     body: String,
 
-    response_headers: Arc<Mutex<String>>,
-    response_status_code: Arc<Mutex<u16>>,
     response: Arc<Mutex<String>>,
+    response_headers: Arc<Mutex<String>>,
+    response_status: Arc<Mutex<String>>,
+    response_status_code: Arc<Mutex<u16>>,
     response_time: Arc<Mutex<Option<time::Duration>>>,
-    status: Arc<Mutex<String>>,
 
     is_loading: Arc<AtomicBool>,
 }
 
-impl Default for PostmanApp {
-    fn default() -> Self {
+impl RequestTab {
+    fn new(id: u64) -> Self {
         Self {
+            id,
+            name: format!("Request {}", id),
+
             method_index: 0,
-            methods: vec!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
             url: String::new(),
+
             headers: vec![Header {
                 key: "Content-Type".into(),
                 value: "application/json".into(),
             }],
+
             body: String::new(),
+
             response: Arc::new(Mutex::new(String::new())),
-            status: Arc::new(Mutex::new("Ready".into())),
             response_headers: Arc::new(Mutex::new(String::new())),
+            response_status: Arc::new(Mutex::new("Ready".into())),
             response_status_code: Arc::new(Mutex::new(0)),
             response_time: Arc::new(Mutex::new(None)),
+
             is_loading: Arc::new(AtomicBool::new(false)),
         }
     }
 }
 
+struct PostmanApp {
+    methods: Vec<&'static str>,
+    tabs: Vec<RequestTab>,
+    active_tab: usize,
+    next_tab_id: u64,
+}
+
+impl Default for PostmanApp {
+    fn default() -> Self {
+        Self {
+            methods: vec!["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"],
+            tabs: vec![RequestTab::new(1)],
+            active_tab: 0,
+            next_tab_id: 2,
+        }
+    }
+}
+
 impl PostmanApp {
+    fn active_tab_mut(&mut self) -> &mut RequestTab {
+        &mut self.tabs[self.active_tab]
+    }
+
+    fn active_tab(&self) -> &RequestTab {
+        &self.tabs[self.active_tab]
+    }
+
     fn save_request(&self) {
+        let tab = self.active_tab();
         let request = SavedRequest {
-            method: self.methods[self.method_index].to_string(),
-            url: self.url.clone(),
-            headers: self.headers.clone(),
-            body: self.body.clone(),
+            method: self.methods[tab.method_index].to_string(),
+            url: tab.url.clone(),
+            headers: tab.headers.clone(),
+            body: tab.body.clone(),
         };
 
         if let Some(path) = rfd::FileDialog::new()
@@ -79,32 +121,34 @@ impl PostmanApp {
         {
             if let Ok(content) = std::fs::read_to_string(path) {
                 if let Ok(req) = serde_json::from_str::<SavedRequest>(&content) {
-                    self.url = req.url;
-                    self.body = req.body;
-                    self.headers = req.headers;
+                    let methods = self.methods.clone();
+                    let tab = self.active_tab_mut();
+                    tab.url = req.url;
+                    tab.body = req.body;
+                    tab.headers = req.headers;
 
-                    if let Some(pos) = self.methods.iter().position(|m| *m == req.method) {
-                        self.method_index = pos;
+                    if let Some(pos) = methods.iter().position(|m| *m == req.method) {
+                        tab.method_index = pos;
                     }
                 }
             }
         }
     }
-
-    fn send_request(&self) {
-        let loading = self.is_loading.clone();
+    fn send_request(&self, tab_index: usize) {
+        let tab = self.tabs[tab_index].clone();
+        let loading = tab.is_loading.clone();
         loading.store(true, Ordering::Relaxed);
 
-        let method = self.methods[self.method_index].to_string();
-        let url = self.url.clone();
-        let body = self.body.clone();
-        let headers = self.headers.clone();
+        let method = self.methods[tab.method_index].to_string();
+        let url = tab.url.clone();
+        let body = tab.body.clone();
+        let headers = tab.headers.clone();
 
-        let response_ref = self.response.clone();
-        let status_ref = self.status.clone();
-        let response_status_code = self.response_status_code.clone();
-        let response_headers = self.response_headers.clone();
-        let response_time = self.response_time.clone();
+        let response_ref = tab.response.clone();
+        let status_ref = tab.response_status.clone();
+        let response_status_code = tab.response_status_code.clone();
+        let response_headers = tab.response_headers.clone();
+        let response_time = tab.response_time.clone();
 
         std::thread::spawn(move || {
             let runtime = tokio::runtime::Runtime::new().unwrap();
@@ -174,43 +218,89 @@ impl PostmanApp {
 impl eframe::App for PostmanApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         ctx.set_visuals(egui::Visuals::dark());
-        if self.is_loading.load(Ordering::Relaxed) {
+        if self.tabs[self.active_tab].is_loading.load(Ordering::Relaxed) {
             ctx.request_repaint();
         }
         egui::TopBottomPanel::top("toolbar").show(ctx, |ui| {
-            ui.horizontal(|ui| {
-                egui::ComboBox::from_label("Method")
-                    .selected_text(self.methods[self.method_index])
-                    .show_ui(ui, |ui| {
-                        for (idx, method) in self.methods.iter().enumerate() {
-                            ui.selectable_value(&mut self.method_index, idx, *method);
-                        }
+            ui.horizontal_wrapped(|ui| {
+                let mut close_idx = None;
+
+                for (i, tab) in self.tabs.iter().enumerate() {
+                    ui.group(|ui| {
+                        ui.horizontal(|ui| {
+                            let selected = self.active_tab == i;
+
+                            if ui.selectable_label(selected, &tab.name).clicked() {
+                                self.active_tab = i;
+                            }
+
+                            if self.tabs.len() > 1 {
+                                if ui.small_button("×").clicked() {
+                                    close_idx = Some(i);
+                                }
+                            }
+                        });
                     });
-
-                ui.text_edit_singleline(&mut self.url);
-
-                // if ui.button("Send").clicked() {
-                //     self.send_request();
-                // }
-                let loading = self.is_loading.load(Ordering::Relaxed);
-                if ui.add_enabled(!loading, egui::Button::new("Send")).clicked() {
-                    self.send_request();
-                }
-                if loading {
-                    ui.add(egui::Spinner::new());
-                    ui.label("Sending...");
                 }
 
-                if ui.button("Save").clicked() {
-                    self.save_request();
+                if ui.button("+").clicked() {
+                    self.tabs.push(RequestTab::new(self.next_tab_id));
+
+                    self.active_tab = self.tabs.len() - 1;
+
+                    self.next_tab_id += 1;
                 }
 
-                if ui.button("Load").clicked() {
-                    self.load_request();
+                if let Some(idx) = close_idx {
+                    self.tabs.remove(idx);
+
+                    if self.active_tab >= self.tabs.len() {
+                        self.active_tab = self.tabs.len() - 1;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                let methods = &self.methods;
+                {
+                    let tab = &mut self.tabs[self.active_tab];
+                    egui::ComboBox::from_label("Method")
+                        .selected_text(methods[tab.method_index])
+                        .show_ui(ui, |ui| {
+                            for (idx, method) in methods.iter().enumerate() {
+                                ui.selectable_value(&mut tab.method_index, idx, *method);
+                            }
+                        });
+
+                    ui.text_edit_singleline(&mut tab.url);
+
+                    // if ui.button("Send").clicked() {
+                    //     self.send_request();
+                    // }
+                    let loading = tab.is_loading.load(Ordering::Relaxed);
+                    if ui
+                        .add_enabled(!loading, egui::Button::new("Send"))
+                        .clicked()
+                    {
+                        let idx = self.active_tab;
+                        self.send_request(idx);
+                    }
+                    if loading {
+                        ui.add(egui::Spinner::new());
+                        ui.label("Sending...");
+                    }
+
+                    if ui.button("Save").clicked() {
+                        self.save_request();
+                    }
+
+                    if ui.button("Load").clicked() {
+                        self.load_request();
+                    }
                 }
             });
         });
         egui::CentralPanel::default().show(ctx, |ui| {
+            let tab = &mut self.tabs[self.active_tab];
             ui.columns(2, |columns| {
                 // REQUEST SIDE
                 columns[0].vertical(|ui| {
@@ -226,7 +316,7 @@ impl eframe::App for PostmanApp {
                         .show(ui, |ui| {
                             let mut remove = None;
 
-                            for (i, header) in self.headers.iter_mut().enumerate() {
+                            for (i, header) in tab.headers.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
                                     ui.add_sized(
                                         [140.0, 24.0],
@@ -245,12 +335,12 @@ impl eframe::App for PostmanApp {
                             }
 
                             if let Some(idx) = remove {
-                                self.headers.remove(idx);
+                                tab.headers.remove(idx);
                             }
                         });
 
                     if ui.button("+ Header").clicked() {
-                        self.headers.push(Header {
+                        tab.headers.push(Header {
                             key: String::new(),
                             value: String::new(),
                         });
@@ -265,7 +355,7 @@ impl eframe::App for PostmanApp {
                         .max_height(500.0)
                         .show(ui, |ui| {
                             ui.add(
-                                egui::TextEdit::multiline(&mut self.body)
+                                egui::TextEdit::multiline(&mut tab.body)
                                     .font(egui::TextStyle::Monospace)
                                     .desired_rows(20)
                                     .desired_width(f32::INFINITY),
@@ -277,7 +367,7 @@ impl eframe::App for PostmanApp {
                 columns[1].vertical(|ui| {
                     ui.heading("Response");
 
-                    let code = *self.response_status_code.lock().unwrap();
+                    let code = *tab.response_status_code.lock().unwrap();
 
                     let color = match code {
                         200..=299 => egui::Color32::GREEN,
@@ -291,10 +381,10 @@ impl eframe::App for PostmanApp {
                         _ => egui::Color32::GRAY,
                     };
                     ui.horizontal(|ui| {
-                        ui.colored_label(color, self.status.lock().unwrap().clone());
-                        let res_duration = self.response_time.lock().unwrap();
+                        ui.colored_label(color, tab.response_status.lock().unwrap().clone());
+                        let res_duration = tab.response_time.lock().unwrap();
                         if res_duration.is_some() {
-                            ui.label(format!("{} ms",res_duration.unwrap().as_millis()));
+                            ui.label(format!("{} ms", res_duration.unwrap().as_millis()));
                         }
                     });
 
@@ -303,7 +393,7 @@ impl eframe::App for PostmanApp {
                     egui::CollapsingHeader::new("Response Headers")
                         .default_open(false)
                         .show(ui, |ui| {
-                            let mut headers = self.response_headers.lock().unwrap().clone();
+                            let mut headers = tab.response_headers.lock().unwrap().clone();
 
                             ui.add(
                                 egui::TextEdit::multiline(&mut headers)
@@ -315,7 +405,7 @@ impl eframe::App for PostmanApp {
 
                     ui.separator();
 
-                    let mut response = self.response.lock().unwrap().clone();
+                    let mut response = tab.response.lock().unwrap().clone();
 
                     egui::ScrollArea::vertical()
                         .id_salt("response_scroll")
@@ -339,13 +429,12 @@ fn main() -> Result<(), eframe::Error> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1600.0, 900.0])
             .with_min_inner_size([1200.0, 700.0]),
-            ..Default::default()
+        ..Default::default()
     };
 
     let mut style = egui::Style::default();
 
-    style.spacing.item_spacing =
-        egui::vec2(8.0, 8.0);
+    style.spacing.item_spacing = egui::vec2(8.0, 8.0);
 
     style.visuals = egui::Visuals::dark();
 
