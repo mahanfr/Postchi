@@ -25,6 +25,7 @@ struct SavedRequest {
 
 #[derive(Clone)]
 struct RequestTab {
+    #[allow(dead_code)]
     id: u64,
     name: String,
 
@@ -277,11 +278,11 @@ impl eframe::App for PostmanApp {
                     //     self.send_request();
                     // }
                     let loading = tab.is_loading.load(Ordering::Relaxed);
-                    if ui
-                        .add_enabled(!loading, egui::Button::new("Send"))
-                        .clicked()
-                    {
+                    if ui.add_enabled(!loading, egui::Button::new("Send")).clicked() {
                         let idx = self.active_tab;
+                        if tab.url.len() > 14 {
+                            tab.name = format!("[{}] ...{}" ,methods[tab.method_index], tab.url.split_at(tab.url.len() - 10).1.to_string());
+                        }
                         self.send_request(idx);
                     }
                     if loading {
