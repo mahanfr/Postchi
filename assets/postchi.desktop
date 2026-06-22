@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=Postchi
+Comment=Native API Client Testing Toolkit
+Exec=postchi
+Icon=postchi
+Terminal=false
+Type=Application
+Categories=Development;Network;
