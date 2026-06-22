@@ -1,6 +1,7 @@
 use eframe::egui;
 use reqwest::Method;
 use serde::{Deserialize, Serialize};
+use arboard::Clipboard;
 use std::{
     sync::{
         Arc, Mutex,
@@ -8,6 +9,19 @@ use std::{
     },
     time::{self},
 };
+
+fn copy_to_clipboard(text: &str) {
+    if let Ok(mut clipboard) = Clipboard::new() {
+        let _ = clipboard.set_text(text.to_owned());
+    }
+}
+
+fn paste_from_clipboard() -> Option<String> {
+    Clipboard::new()
+        .ok()?
+        .get_text()
+        .ok()
+}
 
 #[derive(Clone, Serialize, Deserialize)]
 struct Header {
@@ -272,11 +286,33 @@ impl eframe::App for PostmanApp {
                             }
                         });
 
-                    ui.text_edit_singleline(&mut tab.url);
+                    // ******************* URL Tab *********************
+                    ui.text_edit_singleline(&mut tab.url).context_menu(|ui| {
+                        if ui.button("copy").clicked() {
+                            copy_to_clipboard(&tab.url);
+                            ui.close();
+                        }
 
-                    // if ui.button("Send").clicked() {
-                    //     self.send_request();
-                    // }
+                        if ui.button("cut").clicked() {
+                            copy_to_clipboard(&tab.url);
+                            tab.url.clear();
+                            ui.close();
+                        }
+
+                        if ui.button("paste").clicked() {
+                            if let Some(text) = paste_from_clipboard() {
+                                tab.url.push_str(&text);
+                            }
+                            ui.close();
+                        }
+
+                        if ui.button("clear").clicked() {
+                            tab.url.clear();
+                            ui.close();
+                        }
+                    });
+
+                    // ***************** Send Button *******************
                     let loading = tab.is_loading.load(Ordering::Relaxed);
                     if ui.add_enabled(!loading, egui::Button::new("Send")).clicked() {
                         let idx = self.active_tab;
@@ -319,16 +355,57 @@ impl eframe::App for PostmanApp {
 
                             for (i, header) in tab.headers.iter_mut().enumerate() {
                                 ui.horizontal(|ui| {
-                                    ui.add_sized(
-                                        [140.0, 24.0],
-                                        egui::TextEdit::singleline(&mut header.key),
-                                    );
 
-                                    ui.add_sized(
-                                        [220.0, 24.0],
-                                        egui::TextEdit::singleline(&mut header.value),
-                                    );
+                                    // ****************** Header Key *********************
+                                    ui.text_edit_singleline(&mut header.key).context_menu(|ui| {
+                                        if ui.button("copy").clicked() {
+                                            copy_to_clipboard(&header.key);
+                                            ui.close();
+                                        }
 
+                                        if ui.button("cut").clicked() {
+                                            copy_to_clipboard(&header.key);
+                                            header.key.clear();
+                                            ui.close();
+                                        }
+
+                                        if ui.button("paste").clicked() {
+                                            if let Some(text) = paste_from_clipboard() {
+                                                header.key.push_str(&text);
+                                            }
+                                            ui.close();
+                                        }
+
+                                        if ui.button("clear").clicked() {
+                                            header.key.clear();
+                                            ui.close();
+                                        }
+                                    });
+                                    // ******************** Header Value **********************
+                                    ui.text_edit_singleline(&mut header.value).context_menu(|ui| {
+                                        if ui.button("copy").clicked() {
+                                            copy_to_clipboard(&header.value);
+                                            ui.close();
+                                        }
+
+                                        if ui.button("cut").clicked() {
+                                            copy_to_clipboard(&header.value);
+                                            header.value.clear();
+                                            ui.close();
+                                        }
+
+                                        if ui.button("paste").clicked() {
+                                            if let Some(text) = paste_from_clipboard() {
+                                                header.value.push_str(&text);
+                                            }
+                                            ui.close();
+                                        }
+
+                                        if ui.button("clear").clicked() {
+                                            header.value.clear();
+                                            ui.close();
+                                        }
+                                    });
                                     if ui.button("❌").clicked() {
                                         remove = Some(i);
                                     }
@@ -351,15 +428,17 @@ impl eframe::App for PostmanApp {
 
                     ui.label("Body");
 
+                    // ************* Body Request Editor **************
                     egui::ScrollArea::vertical()
                         .id_salt("response_body_scroll")
                         .max_height(500.0)
                         .show(ui, |ui| {
                             ui.add(
                                 egui::TextEdit::multiline(&mut tab.body)
-                                    .font(egui::TextStyle::Monospace)
-                                    .desired_rows(20)
-                                    .desired_width(f32::INFINITY),
+                                .font(egui::TextStyle::Monospace)
+                                .desired_rows(60)
+                                .desired_width(f32::INFINITY)
+                                .code_editor()
                             );
                         });
                 });
@@ -425,6 +504,7 @@ impl eframe::App for PostmanApp {
         });
     }
 }
+
 fn main() -> Result<(), eframe::Error> {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
